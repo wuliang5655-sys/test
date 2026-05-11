@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NLSC 我的地圖 - 本地儲存版</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    
+    <!-- Leaflet Routing Machine CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet-routing-machine/3.2.12/leaflet-routing-machine.css" />
+
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+    <!-- Leaflet JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <!-- Leaflet Routing Machine JS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-routing-machine/3.2.12/leaflet-routing-machine.min.js"></script>
+
+    <style>
+        #map { height: 100vh; width: 100%; z-index: 10; }
+        
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .leaflet-routing-container { display: none; }
+
+        .custom-marker { background: none; border: none; }
+        .custom-marker i { filter: drop-shadow(0 3px 2px rgba(0,0,0,0.4)); }
+
+        @media (max-width: 768px) {
+            #sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease-in-out;
+                z-index: 50;
+            }
+            #sidebar.open { transform: translateX(0); }
+        }
+        
+        .tab-active {
+            border-bottom: 2px solid #2563eb;
+            color: #2563eb;
+        }
+
+        .instruction-step {
+            border-left: 2px dashed #e5e7eb;
+            margin-left: 11px;
+            padding-left: 20px;
+            position: relative;
+        }
+        .instruction-step::before {
+            content: '';
+            position: absolute; left: -5px; top: 8px; width: 8px; height: 8px;
+            background: #d1d5db; border-radius: 50%;
+        }
+
+        /* 圖層控制面板 */
+        .layer-control {
+            position: absolute; top: 1rem; right: 1rem; z-index: 40;
+            display: flex; flex-direction: column; gap: 0.5rem;
+        }
+        .layer-btn {
+            background: white; border-radius: 12px; padding: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.2s; border: 2px solid transparent; width: 48px; height: 48px;
+            position: relative;
+        }
+        .layer-btn.active { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+        .layer-btn:hover { transform: scale(1.05); }
+        .layer-tooltip {
+            position: absolute; right: 60px; background: rgba(0,0,0,0.8);
+            color: white; padding: 4px 8px; border-radius: 4px;
+            font-size: 12px; white-space: nowrap; pointer-events: none;
+            opacity: 0; transition: opacity 0.2s;
+        }
+        .layer-btn:hover .layer-tooltip { opacity: 1; }
+    </style>
+</head>
+<body class="bg-gray-100 flex overflow-hidden relative">
+
+    <!-- 行動版選單按鈕 -->
+    <button onclick="toggleSidebar()" class="md:hidden absolute top-4 left-4 z-40 bg-white p-3 rounded-full shadow-lg text-gray-700">
+        <i class="fas fa-bars text-xl"></i>
+    </button>
+
+    <!-- 左側邊欄 -->
+    <div id="sidebar" class="absolute md:relative w-80 md:w-96 h-full bg-white shadow-2xl flex flex-col flex-shrink-0 z-50">
+        <div class="bg-blue-700 text-white p-5">
+            <div class="flex justify-between items-center">
+                <h1 class="text-xl font-bold"><i class="fas fa-map-location-dot mr-2"></i>我的探險地圖</h1>
+                <button onclick="toggleSidebar()" class="md:hidden text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="text-[10px] text-blue-200 mt-2 opacity-70">本地儲存模式 (不連網)</div>
+        </div>
+
+        <!-- 分頁切換 -->
+        <div class="flex bg-white border-b text-sm font-bold text-gray-500">
+            <button onclick="switchTab('poi')" id="tab-poi" class="flex-1 py-3 tab-active hover:bg-gray-50 transition">興趣點</button>
+            <button onclick="switchTab('plan')" id="tab-plan" class="flex-1 py-3 hover:bg-gray-50 transition">一日遊</button>
+            <button onclick="switchTab('route')" id="tab-route" class="flex-1 py-3 hover:bg-gray-50 transition relative">
+                路徑
+                <span id="route-badge" class="hidden absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full"></span>
+            </button>
+        </div>
+
+        <!-- 內容區：興趣點列表 -->
+        <div id="panel-poi" class="flex flex-col flex-1 overflow-hidden">
+            <div class="p-4 border-b bg-white">
+                <div class="relative">
+                    <input type="text" id="search-input" placeholder="搜尋地點..." class="w-full pl-10 pr-4 py-3 bg-gray-100 rounded-lg focus:ring-2 focus:ring-blue-300 outline-none text-sm shadow-inner" onkeypress="if(event.key==='Enter') performSearch()">
+                    <i class="fas fa-search absolute left-4 top-3.5 text-gray-400"></i>
+                </div>
+                <div id="search-results" class="hidden absolute left-4 right-4 top-28 bg-white shadow-2xl rounded-lg border max-h-60 overflow-y-auto z-[60]"></div>
+            </div>
+
+            <div class="px-4 py-2 bg-blue-50 border-b flex items-center justify-between">
+                <span class="text-xs font-bold text-blue-700 uppercase tracking-wider">自動路徑規劃</span>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="route-toggle" class="sr-only peer" onchange="toggleRouting()">
+                    <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+            </div>
+
+            <div class="flex-1 overflow-y-auto no-scrollbar p-4 bg-gray-50">
+                <div id="poi-list" class="space-y-3"></div>
+            </div>
+        </div>
+
+        <!-- 內容區：一日遊規劃 -->
+        <div id="panel-plan" class="hidden flex-1 flex flex-col overflow-hidden bg-gray-50">
+            <div class="p-4 bg-white border-b">
+                <p class="text-xs text-gray-500 mb-3">輸入城市發掘熱門行程</p>
+                <div class="flex gap-2">
+                    <input type="text" id="plan-city" placeholder="例如：台中" class="flex-1 px-3 py-2 bg-gray-100 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400">
+                    <button onclick="generatePlan()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 transition">
+                        規劃
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+                <div id="plan-results" class="space-y-4">
+                    <div class="text-center py-10 text-gray-400">
+                        <i class="fas fa-umbrella-beach text-4xl mb-3 opacity-20"></i>
+                        <p class="text-xs">輸入城市開始規劃行程</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 內容區：路徑規劃詳情 -->
+        <div id="panel-route" class="hidden flex-1 overflow-y-auto no-scrollbar bg-white">
+            <div id="route-summary" class="m-4 p-4 bg-blue-600 rounded-2xl text-white shadow-lg hidden">
+                <div class="flex justify-around text-center">
+                    <div>
+                        <p class="text-[10px] opacity-80 uppercase">總距離</p>
+                        <p class="text-xl font-bold" id="total-dist">--</p>
+                    </div>
+                    <div class="w-[1px] bg-blue-400 opacity-30"></div>
+                    <div>
+                        <p class="text-[10px] opacity-80 uppercase">預估時間</p>
+                        <p class="text-xl font-bold" id="total-time">--</p>
+                    </div>
+                </div>
+            </div>
+            <div id="route-details" class="px-6 py-4 space-y-0 relative">
+                <div id="route-empty" class="text-center py-10 text-gray-400">
+                    <i class="fas fa-map-signs text-4xl mb-4 opacity-20"></i>
+                    <p class="text-sm italic">請開啟規劃開關<br>並加入至少兩個地點</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 地圖區域 -->
+    <div class="flex-1 relative">
+        <div class="layer-control">
+            <button onclick="toggleMapLayer('EMAP')" id="btn-EMAP" class="layer-btn active"><i class="fas fa-map"></i><span class="layer-tooltip">電子地圖</span></button>
+            <button onclick="toggleMapLayer('PHOTO2')" id="btn-PHOTO2" class="layer-btn"><i class="fas fa-satellite"></i><span class="layer-tooltip">正射影像</span></button>
+            <div class="w-8 h-[1px] bg-gray-200 mx-auto my-1"></div>
+            <button onclick="toggleOverlayLayer('Village')" id="btn-Village" class="layer-btn"><i class="fas fa-users-rectangle"></i><span class="layer-tooltip">村里界圖</span></button>
+            <button onclick="toggleOverlayLayer('LANDSECT')" id="btn-LANDSECT" class="layer-btn"><i class="fas fa-border-all"></i><span class="layer-tooltip">地籍圖</span></button>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <script>
+        // --- 本地儲存邏輯 (取代 Firebase) ---
+        const STORAGE_KEY = 'my_map_pois';
+        let pois = [];
+        let markers = {};
+        let map;
+        let routingControl = null;
+        const baseLayers = {};
+        const overlayLayers = {};
+
+        // 初始化
+        window.addEventListener('load', () => {
+            initLeaflet();
+            loadPois(); // 從 LocalStorage 載入
+        });
+
+        function initLeaflet() {
+            map = L.map('map', { zoomControl: false }).setView([23.6978, 120.9605], 8);
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+            
+            const nlscUrl = 'https://wmts.nlsc.gov.tw/wmts/{id}/default/GoogleMapsCompatible/{z}/{y}/{x}';
+            baseLayers['EMAP'] = L.tileLayer(nlscUrl.replace('{id}', 'EMAP'), { maxZoom: 19 });
+            baseLayers['PHOTO2'] = L.tileLayer(nlscUrl.replace('{id}', 'PHOTO2'), { maxZoom: 19 });
+            overlayLayers['Village'] = L.tileLayer(nlscUrl.replace('{id}', 'Village'), { maxZoom: 19, opacity: 0.7 });
+            overlayLayers['LANDSECT'] = L.tileLayer(nlscUrl.replace('{id}', 'LANDSECT'), { maxZoom: 19, opacity: 0.8 });
+            
+            baseLayers['EMAP'].addTo(map);
+            map.on('click', (e) => showPopup(e.latlng.lat, e.latlng.lng));
+        }
+
+        // --- 資料管理 ---
+        function loadPois() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                try {
+                    pois = JSON.parse(saved);
+                } catch (e) {
+                    pois = [];
+                }
+            }
+            renderUI();
+            updateRouting();
+        }
+
+        function savePoisToLocal() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(pois));
+            renderUI();
+            updateRouting();
+        }
+
+        window.savePoi = (lat, lng, name) => {
+            if (!name) return;
+            const newPoi = {
+                id: Date.now().toString(),
+                lat,
+                lng,
+                name,
+                timestamp: Date.now()
+            };
+            pois.push(newPoi);
+            savePoisToLocal();
+            map.closePopup();
+        };
+
+        window.deletePoi = (id) => {
+            pois = pois.filter(p => p.id !== id);
+            savePoisToLocal();
+        };
+
+        // --- UI 渲染 ---
+        function renderUI() {
+            const list = document.getElementById('poi-list');
+            if (!list) return;
+            list.innerHTML = '';
+            
+            // 清除現有標記
+            Object.values(markers).forEach(m => map.removeLayer(m));
+            markers = {};
+
+            pois.forEach((poi, idx) => {
+                const item = document.createElement('div');
+                item.className = "bg-white p-3 rounded-xl border border-gray-100 shadow-sm flex items-center gap-3 cursor-pointer hover:border-blue-400 transition";
+                item.onclick = () => map.flyTo([poi.lat, poi.lng], 16);
+                item.innerHTML = `
+                    <div class="bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0">${idx+1}</div>
+                    <div class="flex-1 truncate">
+                        <p class="text-sm font-bold text-gray-800 truncate">${poi.name}</p>
+                    </div>
+                    <button onclick="event.stopPropagation(); window.deletePoi('${poi.id}')" class="text-gray-300 hover:text-red-500 transition"><i class="fas fa-trash-alt text-xs"></i></button>
+                `;
+                list.appendChild(item);
+
+                // 建立地圖標記
+                markers[poi.id] = L.marker([poi.lat, poi.lng], {
+                    icon: L.divIcon({
+                        className: 'custom-marker',
+                        html: `<div class="relative"><i class="fas fa-location-dot text-2xl text-blue-600"></i><span class="absolute -top-1 -right-1 bg-white text-blue-600 text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center border border-blue-600">${idx+1}</span></div>`,
+                        iconSize: [25, 35], iconAnchor: [12, 35]
+                    })
+                }).addTo(map).bindPopup(`<b>${poi.name}</b>`);
+            });
+        }
+
+        // --- 路由規劃 ---
+        function updateRouting() {
+            const toggle = document.getElementById('route-toggle');
+            const summary = document.getElementById('route-summary');
+            const details = document.getElementById('route-details');
+            const badge = document.getElementById('route-badge');
+            
+            if (!toggle || !toggle.checked || pois.length < 2) {
+                if (routingControl) map.removeControl(routingControl);
+                routingControl = null;
+                summary?.classList.add('hidden');
+                badge?.classList.add('hidden');
+                if(details) details.innerHTML = '<div class="text-center py-10 text-gray-400"><i class="fas fa-map-signs text-4xl mb-4 opacity-20"></i><p class="text-sm italic">請開啟開關並加入至少兩個地點</p></div>';
+                return;
+            }
+
+            const waypoints = pois.map(p => L.latLng(p.lat, p.lng));
+            if (routingControl) map.removeControl(routingControl);
+
+            routingControl = L.Routing.control({
+                waypoints: waypoints,
+                routeWhileDragging: false,
+                addWaypoints: false,
+                show: false,
+                lineOptions: { styles: [{ color: '#2563eb', opacity: 0.8, weight: 6 }] },
+                createMarker: () => null
+            }).on('routesfound', (e) => {
+                const r = e.routes[0];
+                summary?.classList.remove('hidden');
+                badge?.classList.remove('hidden');
+                document.getElementById('total-dist').innerText = (r.summary.totalDistance / 1000).toFixed(1) + ' km';
+                document.getElementById('total-time').innerText = Math.round(r.summary.totalTime / 60) + ' 分';
+                renderRouteDetails(r);
+            }).addTo(map);
+        }
+
+        function renderRouteDetails(route) {
+            const container = document.getElementById('route-details');
+            container.innerHTML = '';
+            route.instructions.forEach((inst) => {
+                const step = document.createElement('div');
+                step.className = "instruction-step mb-3";
+                step.innerHTML = `
+                    <div class="flex items-start justify-between">
+                        <span class="text-xs text-gray-600">${inst.text}</span>
+                        <span class="text-[9px] text-gray-400 flex-shrink-0 ml-2">${inst.distance > 1000 ? (inst.distance/1000).toFixed(1)+'km' : Math.round(inst.distance)+'m'}</span>
+                    </div>
+                `;
+                container.appendChild(step);
+            });
+        }
+
+        // --- 搜尋與規劃工具 ---
+        window.performSearch = async () => {
+            const q = document.getElementById('search-input').value;
+            if(!q) return;
+            const resBox = document.getElementById('search-results');
+            resBox.innerHTML = '<p class="p-3 text-center text-xs text-gray-400">搜尋中...</p>';
+            resBox.classList.remove('hidden');
+            try {
+                const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&countrycodes=tw`);
+                const data = await r.json();
+                resBox.innerHTML = data.map(i => `<div class="p-3 hover:bg-gray-100 cursor-pointer border-b text-sm" onclick="window.onSelectResult(${i.lat}, ${i.lon}, '${i.display_name.split(',')[0].replace(/'/g,"\\'")}')"><i class="fas fa-location-dot mr-2 text-blue-500"></i>${i.display_name}</div>`).join('');
+            } catch (err) {
+                resBox.innerHTML = '<p class="p-3 text-center text-xs text-red-400">搜尋出錯</p>';
+            }
+        };
+
+        window.onSelectResult = (lat, lng, name) => {
+            document.getElementById('search-results').classList.add('hidden');
+            map.flyTo([lat, lng], 16);
+            showPopup(lat, lng, name);
+        };
+
+        window.generatePlan = async () => {
+            const city = document.getElementById('plan-city').value;
+            if (!city) return;
+            const container = document.getElementById('plan-results');
+            container.innerHTML = '<div class="text-center py-10"><i class="fas fa-spinner fa-spin text-blue-600"></i><p class="text-xs text-gray-500 mt-2">正在搜尋推薦地點...</p></div>';
+
+            try {
+                const cityRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1&countrycodes=tw`);
+                const cityData = await cityRes.json();
+                if (!cityData.length) throw new Error("City not found");
+                
+                const lat = cityData[0].lat;
+                const lon = cityData[0].lon;
+
+                const [restaurants, attractions] = await Promise.all([
+                    fetchOSMData(lat, lon, 'amenity', 'restaurant'),
+                    fetchOSMData(lat, lon, 'tourism', 'attraction')
+                ]);
+
+                renderPlanResults(restaurants, attractions);
+            } catch (err) {
+                container.innerHTML = `<div class="text-center text-red-400 text-xs py-10">找不到資料，請試試其他城市</div>`;
+            }
+        };
+
+        async function fetchOSMData(lat, lon, key, val) {
+            const query = `[out:json];node["${key}"="${val}"](around:5000,${lat},${lon});out 5;`;
+            const res = await fetch('https://overpass-api.de/api/interpreter', {
+                method: 'POST',
+                body: query
+            });
+            const data = await res.json();
+            return data.elements.filter(e => e.tags && e.tags.name);
+        }
+
+        function renderPlanResults(restaurants, attractions) {
+            const container = document.getElementById('plan-results');
+            container.innerHTML = '';
+
+            const createSection = (title, items, icon, colorClass) => {
+                const section = document.createElement('div');
+                section.innerHTML = `<h3 class="text-xs font-bold ${colorClass} mb-2 uppercase tracking-widest flex items-center"><i class="fas ${icon} mr-2"></i>${title}</h3>`;
+                const list = document.createElement('div');
+                list.className = "space-y-2";
+                items.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = "bg-white p-3 rounded-lg border border-gray-100 flex justify-between items-center group hover:border-blue-300 transition cursor-pointer";
+                    row.onclick = () => window.savePoi(item.lat, item.lon, item.tags.name);
+                    row.innerHTML = `
+                        <div class="flex-1 truncate mr-2">
+                            <p class="text-sm font-medium text-gray-700 truncate">${item.tags.name}</p>
+                            <p class="text-[10px] text-gray-400">點擊加入行程</p>
+                        </div>
+                        <i class="fas fa-plus text-blue-400 opacity-0 group-hover:opacity-100 transition"></i>
+                    `;
+                    list.appendChild(row);
+                });
+                if(items.length === 0) list.innerHTML = '<p class="text-[10px] text-gray-300 italic">暫無推薦</p>';
+                section.appendChild(list);
+                return section;
+            };
+
+            container.appendChild(createSection('必訪景點', attractions, 'fa-camera-retro', 'text-orange-500'));
+            container.appendChild(createSection('在地美食', restaurants, 'fa-utensils', 'text-green-600'));
+        }
+
+        // --- 地圖控制 ---
+        window.toggleMapLayer = (id) => {
+            Object.keys(baseLayers).forEach(key => {
+                if (map.hasLayer(baseLayers[key])) map.removeLayer(baseLayers[key]);
+                document.getElementById(`btn-${key}`)?.classList.remove('active');
+            });
+            baseLayers[id].addTo(map);
+            document.getElementById(`btn-${id}`)?.classList.add('active');
+        };
+
+        window.toggleOverlayLayer = (id) => {
+            const btn = document.getElementById(`btn-${id}`);
+            if (map.hasLayer(overlayLayers[id])) {
+                map.removeLayer(overlayLayers[id]);
+                btn?.classList.remove('active');
+            } else {
+                overlayLayers[id].addTo(map);
+                btn?.classList.add('active');
+            }
+        };
+
+        function showPopup(lat, lng, name="") {
+            const div = document.createElement('div');
+            div.innerHTML = `<input id="new-name" class="w-full border p-2 mb-2 text-sm rounded" value="${name}"><button id="s-btn" class="w-full bg-blue-600 text-white p-2 text-sm font-bold rounded shadow">儲存地點</button>`;
+            L.popup().setLatLng([lat, lng]).setContent(div).openOn(map);
+            setTimeout(() => {
+                const b = document.getElementById('s-btn');
+                const i = document.getElementById('new-name');
+                if(i) i.focus();
+                if(b) b.onclick = () => window.savePoi(lat, lng, i.value);
+            }, 50);
+        }
+
+        // --- 介面切換 ---
+        window.switchTab = (tab) => {
+            ['poi', 'plan', 'route'].forEach(t => {
+                document.getElementById(`panel-${t}`).classList.add('hidden');
+                document.getElementById(`tab-${t}`).classList.remove('tab-active');
+            });
+            document.getElementById(`panel-${tab}`).classList.remove('hidden');
+            document.getElementById(`tab-${tab}`).classList.add('tab-active');
+            if(tab === 'route') document.getElementById('route-badge').classList.add('hidden');
+        };
+
+        window.toggleSidebar = () => document.getElementById('sidebar').classList.toggle('open');
+        window.toggleRouting = () => updateRouting();
+    </script>
+</body>
+</html>
